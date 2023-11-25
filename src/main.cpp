@@ -1,17 +1,17 @@
 // Use board "ESP32 DEVKIT V1"
 /* 
 This is the version of the LoRa Transmitter that transmits data
-from the Tower Garden, and also operates the Tower Garden.
-Data sent: Water level, pH level, battery voltage, info about last auto-fill
-Tower Garden functions: operates the circulation pump and fill pump
+from the Weather Station.
+Data sent: Rain rate, Water level (in the canal), battery voltage,
+sun intensity, temperature, humidity, barometric pressure.
 */
 
 #include <Arduino.h>
 #include "functions.h"
 #include "reyax_lora.h"
 #include "analog_reader.h"
-#include "ph_sensor.h"
 #include "water_volume_sensor.h"
+#include "rain_rate_sensor.h"
 #include "elapsedMillis.h"
 
 /**
@@ -26,49 +26,45 @@ Tower Garden functions: operates the circulation pump and fill pump
  */
 // #define LORA_SETUP_REQUIRED
 
-uint8_t voltage_measurement_pin = 13;
-uint8_t fill_pump_pin = 22;
-uint8_t circ_pump_pin = 23;
-uint8_t water_volume_pin = 32;
-uint8_t pH_pin = 33;
-uint8_t hi_water_float_pin = 34;
-//uint8_t low_water_float_pin = 35; // c/b used to monitor a physical button that would wake up ESP32, and start an auto-fill (for Fran)
-bool float_sw_activated = false;
+uint8_t hall_sensor_pin = 32;
+uint8_t voltage_measurement_pin = 33;
+uint8_t solar_sensor_pin = 34;
+uint8_t water_level_pin = 35;
+// var to keep track of how many times the tipping bucket has dumped since the rain started
+static RTC_DATA_ATTR uint16_t rain_counter = 0;
+uint16_t last_rain_counter = 0;
+uint8_t periods_without_rain = 0;
+uint32_t time_in_deep_sleep_seconds;
+uint32_t data_send_timer;
+elapsedMillis data_submit_timer = 0;
+elapsedMillis rain_data_submit_timer = 0;
+
+/* Variable to store the time at which deep sleep is entered. Used to
+   calculate the length of time in deep sleep, if the wakeup happens
+   because of the Hall Sensor interrupt (it started to rain).
+*/
+static RTC_DATA_ATTR struct timeval sleep_enter_time;
 
 // To stop the auto-fill with the float switch, as a fail-safe
 // Stored in IRAM (Internal RAM) for maximum speed of loading and execution
-void IRAM_ATTR float_switch_isr() {
-  float_sw_activated = true;
+void IRAM_ATTR its_raining_isr() {
+  rain_counter++;
 }
-
-/* Variable to determine what to do / not do during this run.
- * It's stored in RTC memory using RTC_DATA_ATTR and
- * maintains its value when ESP32 goes into deep sleep.
- */
-RTC_DATA_ATTR static bool measure_things_this_run = false;
-
-/** Variable to record the fact that the auto-fill pump ran for
- * more than AUTO_FILL_CUT_OFF_TIME, so we don't keep running the
- * auto-fill every time. 
- */
-RTC_DATA_ATTR static bool auto_fill_timed_out = false;
 
 ReyaxLoRa lora(0);
 VoltageSensor voltage_sensor(voltage_measurement_pin);
-pHSensor pH_sensor(pH_pin);
-WaterVolumeSensor water_volume_sensor(water_volume_pin);
+WaterVolumeSensor water_volume_sensor(water_level_pin);
+RainRateSensor rain_sensor;
 
 void setup() {  
   Serial.begin(115200);
   lora.initialize();
   delay(1000); // cuts off Serial Monitor output w/o this
+  pinMode(hall_sensor_pin, INPUT);
   pinMode(voltage_measurement_pin, INPUT);
-  pinMode(fill_pump_pin, OUTPUT);
-  pinMode(circ_pump_pin, OUTPUT);
-  pinMode(water_volume_pin, INPUT);
-  pinMode(pH_pin, INPUT);
-  pinMode(hi_water_float_pin, INPUT);
-  attachInterrupt(hi_water_float_pin, float_switch_isr, RISING);
+  pinMode(solar_sensor_pin, INPUT);
+  pinMode(water_level_pin, INPUT);
+  attachInterrupt(hall_sensor_pin, its_raining_isr, RISING);
 
 #ifdef LORA_SETUP_REQUIRED
   lora.one_time_setup();
@@ -80,22 +76,10 @@ void setup() {
   // EXAMPLE: lora->set_output_power(10);
   //          lora->send_and_reply("AT+CRFOP?");;
 
-  measure_things_this_run = !measure_things_this_run; // to make it different each time it wakes up
   delay(1000); // Serial.monitor needs a few seconds to get ready
-  Serial.println("measure_things_this_run = " + (String)measure_things_this_run);
-
-  if (digitalRead(hi_water_float_pin) == HIGH) { // water is getting into the tub w/o the fill pump running
-    float_sw_activated = true; // the pin is HIGH, so the variable s/b true
-    lora.send_auto_fill_data(0.00, "FL-SW");     // or the last auto-fill stopped w/ the float switch, and it has not been investigated
-  }
-  else {
-    float_sw_activated = false; // the pin is LOW, so the variable s/b false
-  }
-
-  if (measure_things_this_run) { // measure all the things
 
     // Send the water level
-    float water_volume = water_volume_sensor.reported_water_volume();
+    float water_volume = water_volume_sensor.reported_water_level();
     Serial.println("Reported_water_volume:" + (String)water_volume);
     lora.send_water_volume_data(water_volume);
     
@@ -105,63 +89,77 @@ void setup() {
     lora.send_voltage_data(voltage);
     delay(1000); // may not be necessary, but it can't hurt
 
-    // Send the pH level from the pH sensor
-    // pH_sensor.pH_calibration(); // BAS: run only when you need to calibrate the pH sensor
-    float pH = pH_sensor.reported_pH();
-    Serial.println("Reported_pH: " + String(pH, 1));
-    lora.send_pH_data(pH);
-    delay(500);
+    // Send the solar sensor level
 
-        // fill tub if necessary, then send a packet about that
-    if (!auto_fill_timed_out) {
-      if (water_volume <= REFILL_START_VOLUME && !float_sw_activated) {
-        float stop_time_secs = 0.0;
-        String stop_reason;
-        elapsedMillis fill_timer_ms = 0;
-        Serial.println("Fill pump starting");
-        digitalWrite(fill_pump_pin, HIGH);
-        while (!float_sw_activated && water_volume_sensor.reported_water_volume() < REFILL_STOP_VOLUME
-               && fill_timer_ms < (AUTO_FILL_CUT_OFF_SECONDS * 1000.0)) {
-              delay(1000); // fill a second, then check again
-        }
-        digitalWrite(fill_pump_pin, LOW);
-        stop_time_secs = (float)fill_timer_ms / 1000.0;
-        if (stop_time_secs >= AUTO_FILL_CUT_OFF_SECONDS) {
-          auto_fill_timed_out = true;
-          stop_reason = "TIMER";
-        }
-        else {
-          if (float_sw_activated) {
-            stop_reason = "FL-SW";
-          }
-          else {
-            stop_reason = "Fill";
-          }
-        }
-        Serial.println("Fill pump stopped: " + stop_reason);
-        Serial.println("Auto-fill timer (sec): " + (String)stop_time_secs);
-        float fill_volume = water_volume_sensor.reported_water_volume() - water_volume;
-        Serial.println("Auto-fill volume: " + (String)fill_volume);
-        lora.send_auto_fill_data(fill_volume, stop_reason);
-      }
-    }
-  }
+    // Send the temp, humidity, and baro pressure
 
-  // Run the circulation pump
-  elapsedMillis circ_timer_ms = 0;
-  Serial.println("Circ pump starting");
-  digitalWrite(circ_pump_pin, HIGH);
-  // while (timer_ms < (3 * 1000)) {} // BAS: testing only
-  while (circ_timer_ms < (3 * 60 * 1000)) {} // run the circulation pump for 3 minutes
-  Serial.println("Circ pump stopping");
-  digitalWrite(circ_pump_pin, LOW);
-
-  // Go to deep sleep for 5 minutes
+   // Go to deep sleep for 15 minutes, if it's not raining.
   delay(2000);
-  Serial.println("Going to sleep now");
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-  esp_deep_sleep_start();
+  if (rain_counter == 0) {
+    lora.turn_off(); // to save battery power while asleep
+    Serial.println("Going to sleep now");
+    gettimeofday(&sleep_enter_time, NULL);
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    esp_deep_sleep_start();
+  }
+  // if rain_counter > 0, it's raining, so we go into loop(), which will need some elapsedMillis timers
+  // and some other things, so set them up here.
+  // Get the system time and use it to calculate how long we were in deep sleep.
+  // Doesn't matter that the ESP32 doesn't know the actual time; the only thing that
+  // matters is that the RTC clock has SOME time, and that it keeps ticking during
+  // deep sleep (which it does).
+  periods_without_rain = 0;
+
+  // BAS: I'm not sure I need the rest of the lines in setup().
+  struct timeval now;
+  gettimeofday(&now, NULL);
+  time_in_deep_sleep_seconds = now.tv_sec - sleep_enter_time.tv_sec;
+  // Set up a timer for 15 minutes minus time_in_deep_sleep_seconds, until going to sleep again (if it's done raining)
+  data_send_timer = TIME_TO_SLEEP - time_in_deep_sleep_seconds;
 
 } // setup()
 
-void loop() {} // does nothing
+void loop() { // entered only if it's raining; goes to sleep when it stops raining
+  
+  if (rain_data_submit_timer > RAIN_DATA_INTERVAL) { // time to send rain rate data
+    if (rain_counter == last_rain_counter) { // it's not raining
+      periods_without_rain++;
+    }
+    last_rain_counter = rain_counter;
+    rain_counter = 0;
+    rain_data_submit_timer = 0;
+    float rain_rate = rain_sensor.reported_rain_rate(last_rain_counter);
+    Serial.println("Reported_rain_rate:" + (String)rain_rate);
+    lora.send_rain_rate(rain_rate);
+  }
+
+  if (data_submit_timer > TIME_TO_SLEEP) { // TIME_TO_SLEEP is also the non-rain data submit interval
+    data_submit_timer = 0;
+    // Send the water level
+    float water_volume = water_volume_sensor.reported_water_level();
+    Serial.println("Reported_water_volume:" + (String)water_volume);
+    lora.send_water_volume_data(water_volume);
+    
+    // Send the battery voltage
+    float voltage = voltage_sensor.reported_voltage();
+    Serial.println("Reported_voltage:" + (String)voltage);
+    lora.send_voltage_data(voltage);
+    delay(1000); // may not be necessary, but it can't hurt
+
+    // Send the solar sensor level
+
+    // Send the temp, humidity, and baro pressure
+  }
+
+  if (periods_without_rain >= RAIN_SENSE_DURATION) { // it stopped raining, so reset everyting and go to sleep
+    // BAS: go to sleep, with the sleep timer, and wake up at the next 15 minute interval for non-rain data
+    rain_counter = 0;
+    uint16_t seconds_to_sleep = TIME_TO_SLEEP - (uint16_t)(data_submit_timer / 1000); // remainder of the normal sleep time
+    // BAS: need to somehow save seconds_to_sleep, in case it starts raining again before it's time to wake up
+    lora.turn_off(); // to save battery power while asleep
+    Serial.println("Going to sleep now");
+    gettimeofday(&sleep_enter_time, NULL);
+    esp_sleep_enable_timer_wakeup(seconds_to_sleep * uS_TO_S_FACTOR);
+    esp_deep_sleep_start();
+  }
+}

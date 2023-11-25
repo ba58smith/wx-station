@@ -225,21 +225,7 @@ public:
         generate_and_send_payload("Voltage", value_str, alarm_code, email_interval, max_emails);
     }
 
-    /**
-     * @brief Sends a packet with the pH value of the water
-     */
-
-    void send_pH_data(float value) {
-        String value_str = String(value, 1); // makes pH always have one decimal place
-        uint16_t alarm_code = 0;
-        uint16_t email_interval = (uint16_t)PH_ALARM_EMAIL_INTERVAL;
-        uint16_t max_emails = (uint16_t)PH_MAX_EMAILS;
-        if (value < LOW_PH_ALARM_VALUE || value > HIGH_PH_ALARM_VALUE) {
-            alarm_code = (uint16_t)PH_ALARM_CODE;            
-        }
-        generate_and_send_payload("pH", value_str, alarm_code, email_interval, max_emails);
-    }
-
+    
     /**
      * @brief Generate the water volume data string to send to the base station 
      */
@@ -249,35 +235,18 @@ public:
         uint16_t alarm_code = 0;
         uint16_t email_interval = 1;
         uint16_t max_emails = 1;
-        if (value < LOW_WATER_ALARM_VALUE) {
-            alarm_code = (uint16_t)LOW_WATER_ALARM_CODE;
-            email_interval = (uint16_t)LOW_WATER_EMAIL_INTERVAL;
-            max_emails = (uint16_t)LOW_WATER_MAX_EMAILS;
-        }
-        else if (value > HIGH_WATER_ALARM_VALUE) {
-            alarm_code = (uint16_t)HIGH_WATER_ALARM_CODE;
-            email_interval = (uint16_t)HIGH_WATER_EMAIL_INTERVAL;
-            max_emails = (uint16_t)HIGH_WATER_MAX_EMAILS;
-        }
         generate_and_send_payload("Wtr lvl", value_str, alarm_code, email_interval, max_emails);
     }
 
-    /**
-     * @brief Generate the data about the last auto-fill to send to the base station 
-     */
 
-    void send_auto_fill_data(float value, String type) {
-        String value_str = String(value, 1); // makes water fill volume always have one decimal place
-        uint16_t alarm_code = (uint16_t)AUTO_FILL_ALARM_CODE;
-        uint16_t email_interval = (uint16_t)AUTO_FILL_EMAIL_INTERVAL;
-        uint16_t max_emails = (uint16_t)AUTO_FILL_MAX_EMAILS;
-        if (type != "Fill") {
-            alarm_code = (uint16_t)HIGH_WATER_ALARM_CODE;
-            email_interval = (uint16_t)HIGH_WATER_EMAIL_INTERVAL;
-            max_emails = (uint16_t)HIGH_WATER_MAX_EMAILS;
-        }
-        generate_and_send_payload(type, value_str, alarm_code, email_interval, max_emails);
+    /**
+     * @brief Generate the rain rate data string to send to the base station
+    */
+
+    void send_rain_rate(float value) {
+        // BAS write this
     }
+    
 
     void turn_off() { // Used for transmitters that run on small batteries, where LoRa is turned off during sleep
         digitalWrite(pin_, LOW);

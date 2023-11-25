@@ -16,25 +16,15 @@
 
 // Configure each of the variables below for each transmitter
 
-String TRANSMITTER_NAME = "Garden";
-#define TIME_TO_SLEEP 300 // 300 is 5 minutes
-#define LORA_NODE_ADDRESS 2205UL // Bessie=2201, Boat=2202, Test=2203, Pool=2204, Garden=2205
+String TRANSMITTER_NAME = "Wx";
+#define TIME_TO_SLEEP 900 // 900 is 15 minutes
+#define LORA_NODE_ADDRESS 2206UL // Bessie=2201, Boat=2202, Test=2203, Pool=2204, Garden=2205, Wx=2206
 #define R1_VALUE 100500.0 // actual measured value
 #define R2_VALUE 22040.0  // ditto
 // This will be different for each transmitter device, and must be calculated from actual
 // measurements taken of the source voltage, to get the final voltage correct. Calibrate
 // at normal battery voltage for known input voltage.
 #define VOLTAGE_CALIBRATION 0.98  // Calculated 2/8/2023
-
-#define LOWEST_MEASURED_GALLONS 5.5 // where the eTape starts to give valid readings
-#define LOWEST_MEASURED_VOLTAGE 1.73 // volts measured at 1.5" (5.5 gallons)
-#define VOLTS_PER_GALLON 0.065 // in the range from 8 gallons to 17.4 gallons (the relevant range)
-#define REFILL_START_VOLUME 15.0 // start refilling when it's less than this
-#define REFILL_STOP_VOLUME 17.0 // stop refilling when it's this full
-#define AUTO_FILL_CUT_OFF_SECONDS 180.0 // s/b 180 (3 minutes)
-#define AUTO_FILL_ALARM_CODE 1
-#define AUTO_FILL_EMAIL_INTERVAL 1
-#define AUTO_FILL_MAX_EMAILS 1
 
 #define HIGH_VOLTAGE_ALARM_VALUE 14.55 //Victron solar controller is set to 14.5
 #define HIGH_VOLTAGE_ALARM_CODE 3
@@ -46,23 +36,8 @@ String TRANSMITTER_NAME = "Garden";
 #define LOW_VOLTAGE_EMAIL_INTERVAL 240 // In MINUTES (4 hours)
 #define LOW_VOLTAGE_MAX_EMAILS 5
 
-#define LOW_PH_ALARM_VALUE 5.4 // not urgent, per Fran
-#define HIGH_PH_ALARM_VALUE 6.7
-#define PH_ALARM_CODE 1
-#define PH_ALARM_EMAIL_INTERVAL 360 // not urgent, per Fran (6 hours)
-#define PH_MAX_EMAILS 3
-#define PH_LOW_CAL_VOLTAGE_MV 2030.0 // avg millivolts in 4.00 pH calibration solution (factory default in ph_grav.h = 2030)
-#define PH_MID_CAL_VOLTAGE_MV 1500.0 // avg millivolts in 7.00 pH calibration solution (factory default = 1500)
-#define PH_HI_CAL_VOLTAGE_MV 975.0 // avg millivolts in 10.00 pH calibration solution (factory default = 975)
-
-#define LOW_WATER_ALARM_VALUE 14.0 // not urgent (Auto-refill s/h happened at 15.0)
-#define LOW_WATER_ALARM_CODE 1
-#define LOW_WATER_EMAIL_INTERVAL 360 // in minutes (6 hours)
-#define LOW_WATER_MAX_EMAILS 5
-
-#define HIGH_WATER_ALARM_VALUE 18.0 // tub c/b overflowing, stuck pump switch
-#define HIGH_WATER_ALARM_CODE 33
-#define HIGH_WATER_EMAIL_INTERVAL 15 // in minutes
-#define HIGH_WATER_MAX_EMAILS 5
+#define RAIN_DATA_INTERVAL 60 // 60 is 1 minute
+#define RAIN_BUCKET_VOLUME 100.0 // BAS: measure the volume of each dump of the bucket
+#define RAIN_SENSE_DURATION 3 // Multiples of RAIN_DATA_INTERVAL. How long to stay awake after it seems to have stopped raining
 
 #endif // #ifndef _CONFIG_H_

@@ -27,10 +27,10 @@ public:
      * However, it's just as simple to convert the measured voltage to gallons, w/o converting to ohms,
      * then inches, then gallons, so this function takes the simpler approach.
      */
-    float reported_water_volume() {
+    float reported_water_level() {
         float measured_voltage = analog_reader_.read_avg_mV(20, 50) / 1000;
-        float calculated_gallons = ((measured_voltage - LOWEST_MEASURED_VOLTAGE) / VOLTS_PER_GALLON) + LOWEST_MEASURED_GALLONS;
-        return calculated_gallons;
+        float calculated_level = measured_voltage; //BAS: do whatever needed to convert voltage to canal water level
+        return calculated_level;
     }
 };
 
