@@ -17,7 +17,7 @@
 // Configure each of the variables below for each transmitter
 
 String TRANSMITTER_NAME = "Wx";
-#define TIME_TO_SLEEP 900 // 900 is 15 minutes
+#define NRD_INTERVAL 900 // Non-Rain Data Interval. 900 is 15 minutes
 #define LORA_NODE_ADDRESS 2206UL // Bessie=2201, Boat=2202, Test=2203, Pool=2204, Garden=2205, Wx=2206
 #define R1_VALUE 100500.0 // actual measured value
 #define R2_VALUE 22040.0  // ditto

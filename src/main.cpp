@@ -31,30 +31,34 @@ uint8_t voltage_measurement_pin = 33;
 uint8_t solar_sensor_pin = 34;
 uint8_t water_level_pin = 35;
 // var to keep track of how many times the tipping bucket has dumped since the rain started
-static RTC_DATA_ATTR uint16_t rain_counter = 0;
-uint16_t last_rain_counter = 0;
-uint8_t periods_without_rain = 0;
-uint32_t time_in_deep_sleep_seconds;
-uint32_t data_send_timer;
-elapsedMillis data_submit_timer = 0;
-elapsedMillis rain_data_submit_timer = 0;
-
-/* Variable to store the time at which deep sleep is entered. Used to
-   calculate the length of time in deep sleep, if the wakeup happens
-   because of the Hall Sensor interrupt (it started to rain).
-*/
-static RTC_DATA_ATTR struct timeval sleep_enter_time;
-
-// To stop the auto-fill with the float switch, as a fail-safe
-// Stored in IRAM (Internal RAM) for maximum speed of loading and execution
-void IRAM_ATTR its_raining_isr() {
-  rain_counter++;
-}
+// I don't think it needs to be in RTC_DATA_ATTR, but it might so it can be incremented by the ISR
+// when the Hall Sensor pin wakes up the ESP32, so the ISR can increment it.
+RTC_DATA_ATTR uint16_t rain_counter = 0; //BAS: after it works, try to remove the RTC_DATA_ATTR and see if it still works.
+elapsedMillis NRD_timer_ms = 0; // NRD = Non-Rain Data
+elapsedMillis rain_data_timer_ms = 0;
 
 ReyaxLoRa lora(0);
 VoltageSensor voltage_sensor(voltage_measurement_pin);
 WaterVolumeSensor water_volume_sensor(water_level_pin);
 RainRateSensor rain_sensor;
+
+/* Variable to store the time at which deep sleep is entered. Used to
+   calculate the length of time in deep sleep, if the wakeup happens
+   because of the Hall Sensor interrupt (it started to rain).
+*/
+RTC_DATA_ATTR struct timeval time_put_to_sleep;
+
+/* Variable to store the remaining amount of time until the next
+   NRD s/b sent.
+*/
+RTC_DATA_ATTR uint16_t seconds_to_next_NRD_send;
+
+/* To record each dumping of the tipping bucket. BAS: will this execute the first time,
+when the interrupt is the thing that wakes up the ESP32 from deep sleep?
+*/ 
+void IRAM_ATTR its_raining_isr() {
+  rain_counter++;
+}
 
 void setup() {  
   Serial.begin(115200);
@@ -78,6 +82,15 @@ void setup() {
 
   delay(1000); // Serial.monitor needs a few seconds to get ready
 
+  // Determine the reason for the wakeup here. If not the interrupt, send all non-rain data,
+  // then see if it might have started raining since waking up (very unlikely, but possible),
+  // and if not, go back to sleep. If the interrupt, or if it's raining now, don't go to sleep,
+  // and drop into loop() to monitor the rain, until it stops. 
+  if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0) { // TIMER wakeup, or first run after a reboot
+
+    seconds_to_next_NRD_send = NRD_INTERVAL; // reset to the normal sleep period
+    NRD_timer_ms = 0; // start the timer, in case it starts to rain before we go to sleep
+    
     // Send the water level
     float water_volume = water_volume_sensor.reported_water_level();
     Serial.println("Reported_water_volume:" + (String)water_volume);
@@ -89,52 +102,57 @@ void setup() {
     lora.send_voltage_data(voltage);
     delay(1000); // may not be necessary, but it can't hurt
 
-    // Send the solar sensor level
+    // BAS: Send the solar sensor level
 
-    // Send the temp, humidity, and baro pressure
+    // BAS: Send the temp, humidity, and baro pressure
 
-   // Go to deep sleep for 15 minutes, if it's not raining.
-  delay(2000);
-  if (rain_counter == 0) {
-    lora.turn_off(); // to save battery power while asleep
-    Serial.println("Going to sleep now");
-    gettimeofday(&sleep_enter_time, NULL);
-    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-    esp_deep_sleep_start();
+    delay(2000);
+    if (rain_counter == 0) { // it's not raining
+      lora.turn_off(); // to save battery power while asleep
+      Serial.println("Going to sleep now");
+      // save current time in case we wakeup from an interrupt
+      gettimeofday(&time_put_to_sleep, NULL);
+      // calculate remaining time until a normal timer wakeup
+      uint16_t seconds_to_sleep = seconds_to_next_NRD_send - (uint16_t)(NRD_timer_ms / 1000);
+      // configure deep sleep, and go to sleep
+      esp_sleep_enable_timer_wakeup(seconds_to_sleep * uS_TO_S_FACTOR);
+      esp_sleep_enable_ext0_wakeup(GPIO_NUM_32, 0); // BAS: make sure that each swipe of the magnet will produce a 1 AND a 0.
+      esp_deep_sleep_start();
+    }
   }
-  // if rain_counter > 0, it's raining, so we go into loop(), which will need some elapsedMillis timers
-  // and some other things, so set them up here.
-  // Get the system time and use it to calculate how long we were in deep sleep.
-  // Doesn't matter that the ESP32 doesn't know the actual time; the only thing that
-  // matters is that the RTC clock has SOME time, and that it keeps ticking during
-  // deep sleep (which it does).
-  periods_without_rain = 0;
-
-  // BAS: I'm not sure I need the rest of the lines in setup().
-  struct timeval now;
-  gettimeofday(&now, NULL);
-  time_in_deep_sleep_seconds = now.tv_sec - sleep_enter_time.tv_sec;
-  // Set up a timer for 15 minutes minus time_in_deep_sleep_seconds, until going to sleep again (if it's done raining)
-  data_send_timer = TIME_TO_SLEEP - time_in_deep_sleep_seconds;
-
+  // Waking up because it's raining, so determine how long we've been asleep, 
+  // and how much time is remaining until the NRD needs to be sent
+  else {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    uint32_t seconds_asleep = now.tv_sec - time_put_to_sleep.tv_sec;
+    seconds_to_next_NRD_send = seconds_to_next_NRD_send - seconds_asleep;
+    // start the timer to know when it's time to send the next NRD
+    NRD_timer_ms = 0;
+  }
 } // setup()
 
 void loop() { // entered only if it's raining; goes to sleep when it stops raining
   
-  if (rain_data_submit_timer > RAIN_DATA_INTERVAL) { // time to send rain rate data
+  static uint16_t last_rain_counter = 0;
+  static uint8_t periods_without_rain = 0;
+
+  if (rain_data_timer_ms > RAIN_DATA_INTERVAL * 1000) { // time to send rain rate data
     if (rain_counter == last_rain_counter) { // it's not raining
       periods_without_rain++;
     }
+    float rain_rate = rain_sensor.reported_rain_rate(rain_counter - last_rain_counter, rain_data_timer_ms);
+    rain_data_timer_ms = 0;
     last_rain_counter = rain_counter;
-    rain_counter = 0;
-    rain_data_submit_timer = 0;
-    float rain_rate = rain_sensor.reported_rain_rate(last_rain_counter);
     Serial.println("Reported_rain_rate:" + (String)rain_rate);
     lora.send_rain_rate(rain_rate);
   }
 
-  if (data_submit_timer > TIME_TO_SLEEP) { // TIME_TO_SLEEP is also the non-rain data submit interval
-    data_submit_timer = 0;
+  if (NRD_timer_ms > seconds_to_next_NRD_send * 1000) { // it's time to send NRD
+    // reset the interval and the timer
+    NRD_timer_ms = 0;
+    seconds_to_next_NRD_send = NRD_INTERVAL;
+
     // Send the water level
     float water_volume = water_volume_sensor.reported_water_level();
     Serial.println("Reported_water_volume:" + (String)water_volume);
@@ -152,14 +170,17 @@ void loop() { // entered only if it's raining; goes to sleep when it stops raini
   }
 
   if (periods_without_rain >= RAIN_SENSE_DURATION) { // it stopped raining, so reset everyting and go to sleep
-    // BAS: go to sleep, with the sleep timer, and wake up at the next 15 minute interval for non-rain data
     rain_counter = 0;
-    uint16_t seconds_to_sleep = TIME_TO_SLEEP - (uint16_t)(data_submit_timer / 1000); // remainder of the normal sleep time
-    // BAS: need to somehow save seconds_to_sleep, in case it starts raining again before it's time to wake up
     lora.turn_off(); // to save battery power while asleep
     Serial.println("Going to sleep now");
-    gettimeofday(&sleep_enter_time, NULL);
-    esp_sleep_enable_timer_wakeup(seconds_to_sleep * uS_TO_S_FACTOR);
+    // save current time in case we wakeup from an interrupt
+    gettimeofday(&time_put_to_sleep, NULL);
+    // calculate remaining time until a normal timer wakeup
+    seconds_to_next_NRD_send = seconds_to_next_NRD_send - (uint16_t)(NRD_timer_ms / 1000); // remainder of the normal sleep time
+    // configure deep sleep, and go to sleep
+    esp_sleep_enable_timer_wakeup(seconds_to_next_NRD_send * uS_TO_S_FACTOR);
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_32, 0); // BAS: make sure that each swipe of the magnet will produce a 1 AND a 0.
     esp_deep_sleep_start();
   }
+  delay(5000);
 }
