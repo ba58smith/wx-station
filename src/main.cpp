@@ -7,11 +7,11 @@ sun intensity, temperature, humidity, barometric pressure.
 */
 
 #include <Arduino.h>
-#include "functions.h"
 #include "reyax_lora.h"
 #include "analog_reader.h"
 #include "water_volume_sensor.h"
 #include "rain_rate_sensor.h"
+#include "bme280.h"
 #include "elapsedMillis.h"
 
 /**
@@ -26,7 +26,7 @@ sun intensity, temperature, humidity, barometric pressure.
  */
 // #define LORA_SETUP_REQUIRED
 
-uint8_t hall_sensor_pin = 32;
+uint8_t hall_sensor_pin = 32; // goes LOW when sensing the magnet
 uint8_t voltage_measurement_pin = 33;
 uint8_t solar_sensor_pin = 34;
 uint8_t water_level_pin = 35;
@@ -41,6 +41,7 @@ ReyaxLoRa lora(0);
 VoltageSensor voltage_sensor(voltage_measurement_pin);
 WaterVolumeSensor water_volume_sensor(water_level_pin);
 RainRateSensor rain_sensor;
+BME280Sensor bme280;
 
 /* Variable to store the time at which deep sleep is entered. Used to
    calculate the length of time in deep sleep, if the wakeup happens
@@ -68,7 +69,7 @@ void setup() {
   pinMode(voltage_measurement_pin, INPUT);
   pinMode(solar_sensor_pin, INPUT);
   pinMode(water_level_pin, INPUT);
-  attachInterrupt(hall_sensor_pin, its_raining_isr, RISING);
+  attachInterrupt(hall_sensor_pin, its_raining_isr, FALLING);
 
 #ifdef LORA_SETUP_REQUIRED
   lora.one_time_setup();
@@ -78,14 +79,14 @@ void setup() {
   // the LoRa parameters, if desired. If you do, use the appropriate 
   // AT command to display the result of the change, to make sure it changed. 
   // EXAMPLE: lora->set_output_power(10);
-  //          lora->send_and_reply("AT+CRFOP?");;
+  //          lora->send_and_reply("AT+CRFOP?");
 
   delay(1000); // Serial.monitor needs a few seconds to get ready
 
   // Determine the reason for the wakeup here. If not the interrupt, send all non-rain data,
   // then see if it might have started raining since waking up (very unlikely, but possible),
-  // and if not, go back to sleep. If the interrupt, or if it's raining now, don't go to sleep,
-  // and drop into loop() to monitor the rain, until it stops. 
+  // and if not, go back to sleep. If the interrupt, or if it's raining by the time the non-rain
+  // data is sent, don't go to sleep. Instead, drop into loop() to monitor the rain, until it stops. 
   if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0) { // TIMER wakeup, or first run after a reboot
 
     seconds_to_next_NRD_send = NRD_INTERVAL; // reset to the normal sleep period
@@ -100,15 +101,25 @@ void setup() {
     float voltage = voltage_sensor.reported_voltage();
     Serial.println("Reported_voltage:" + (String)voltage);
     lora.send_voltage_data(voltage);
-    delay(1000); // may not be necessary, but it can't hurt
 
     // BAS: Send the solar sensor level
 
-    // BAS: Send the temp, humidity, and baro pressure
+    // Send the temp, humidity, and baro pressure
+    String temperature = String(bme280.reported_temp(), 0);
+    Serial.println("Reported_temp:" + temperature);
+    lora.generate_and_send_payload("Temp", temperature, 0, 0, 0);
+
+    String pressure = String(bme280.reported_baro_press(), 0);
+    Serial.println("Reported_pressure:" + pressure);
+    lora.generate_and_send_payload("Press", pressure, 0, 0, 0);
+
+    String humidity = String(bme280.reported_humidity(), 0);
+    Serial.println("Reported_humidity:" + humidity);
+    lora.generate_and_send_payload("Humid", humidity, 0, 0, 0);
 
     delay(2000);
     if (rain_counter == 0) { // it's not raining
-      lora.turn_off(); // to save battery power while asleep
+      // lora.turn_off(); // to save battery power while asleep BAS: need to modify PCB to do this
       Serial.println("Going to sleep now");
       // save current time in case we wakeup from an interrupt
       gettimeofday(&time_put_to_sleep, NULL);
@@ -137,9 +148,12 @@ void loop() { // entered only if it's raining; goes to sleep when it stops raini
   static uint16_t last_rain_counter = 0;
   static uint8_t periods_without_rain = 0;
 
-  if (rain_data_timer_ms > RAIN_DATA_INTERVAL * 1000) { // time to send rain rate data
-    if (rain_counter == last_rain_counter) { // it's not raining
-      periods_without_rain++;
+  if (rain_data_timer_ms > RAIN_DATA_INTERVAL * 1000) { // it's time to send rain rate data
+    if (last_rain_counter == rain_counter) { // its not raining 
+       periods_without_rain++;
+    }
+    else { // it's raining
+       periods_without_rain = 0;
     }
     float rain_rate = rain_sensor.reported_rain_rate(rain_counter - last_rain_counter, rain_data_timer_ms);
     rain_data_timer_ms = 0;
@@ -164,14 +178,24 @@ void loop() { // entered only if it's raining; goes to sleep when it stops raini
     lora.send_voltage_data(voltage);
     delay(1000); // may not be necessary, but it can't hurt
 
-    // Send the solar sensor level
+    // BAS: Send the solar sensor level
 
-    // Send the temp, humidity, and baro pressure
+    String temperature = String(bme280.reported_temp(), 0);
+    Serial.println("Reported_temp:" + temperature);
+    lora.generate_and_send_payload("Temp", temperature, 0, 0, 0);
+
+    String pressure = String(bme280.reported_baro_press(), 0);
+    Serial.println("Reported_pressure:" + pressure);
+    lora.generate_and_send_payload("Press", pressure, 0, 0, 0);
+
+    String humidity = String(bme280.reported_humidity(), 0);
+    Serial.println("Reported_humidity:" + humidity);
+    lora.generate_and_send_payload("Humid", humidity, 0, 0, 0);
   }
 
   if (periods_without_rain >= RAIN_SENSE_DURATION) { // it stopped raining, so reset everyting and go to sleep
     rain_counter = 0;
-    lora.turn_off(); // to save battery power while asleep
+    // lora.turn_off(); // to save battery power while asleep BAS: need to modify PCB to do this
     Serial.println("Going to sleep now");
     // save current time in case we wakeup from an interrupt
     gettimeofday(&time_put_to_sleep, NULL);
